@@ -1,0 +1,43 @@
+@"
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+backend/.env
+*.local
+
+# Database & generated data
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/sample_videos/*.mp4
+data/outputs/
+data/models/*.pt
+
+# MongoDB
+data/mongodb/
+*.pdb
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Models cache
+*.onnx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
+"@ | Set-Content -Encoding utf8 .gitignore
