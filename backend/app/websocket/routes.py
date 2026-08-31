@@ -14,12 +14,12 @@ router = APIRouter()
 async def events_ws(ws: WebSocket):
     await manager.connect(ws)
     try:
-        await ws.send_json({"type": "connected", "message": "DRISHTI-V live stream connected"})
         while True:
-            # client may send pings/filters; we simply keep the socket alive
+            # client may send pings/filters; keep connection open
             await ws.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(ws)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
     except Exception as exc:  # pragma: no cover
-        logger.warning("ws error: %s", exc)
+        logger.debug("ws closed: %s", exc)
+    finally:
         manager.disconnect(ws)

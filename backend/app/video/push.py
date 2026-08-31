@@ -21,12 +21,14 @@ class _Holder:
         self._lock = threading.Lock()
         self._frame: Optional[np.ndarray] = None
         self._ts = 0.0
+        self._seq = 0
         self._event = threading.Event()
 
     def push(self, frame: np.ndarray) -> None:
         with self._lock:
             self._frame = frame
             self._ts = time.time()
+            self._seq += 1
         self._event.set()
 
     def get(self, timeout: float):
@@ -34,7 +36,8 @@ class _Holder:
             with self._lock:
                 self._event.clear()
                 return self._frame, self._ts
-        return None, 0.0
+        with self._lock:
+            return self._frame, self._ts
 
 
 _holders: dict[str, _Holder] = {}

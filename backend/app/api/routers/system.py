@@ -83,6 +83,12 @@ def pipelines() -> dict:
     return {"active": pipeline_manager.active_count, "pipelines": pipeline_manager.all_status()}
 
 
+@router.get("/events/recent")
+def recent_events(limit: int = 50) -> list[dict]:
+    """Recent live telemetry events for HTTP polling fallback."""
+    return list(manager._recent)[-limit:]
+
+
 @router.get("/network")
 def network() -> dict:
     """LAN addresses + ready-to-share URLs for accessing the app from other devices."""

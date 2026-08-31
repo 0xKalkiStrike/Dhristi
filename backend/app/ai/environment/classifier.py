@@ -41,28 +41,65 @@ class ImageQualityService:
         self.fog_thr = settings.fog_score_threshold
         self.lowlight_thr = settings.lowlight_score_threshold
         self.blur_thr = settings.blur_score_threshold
+        
+        # Temporal smoothing state to prevent filter flickering on real video shots
+        self._smooth_brightness: float | None = None
+        self._smooth_contrast: float | None = None
+        self._smooth_fog: float | None = None
+        self._smooth_lowlight: float | None = None
+        self._current_label = "day"
+        self._label_counts: dict[str, int] = {}
 
     def analyze(self, frame: np.ndarray) -> QualityReport:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-        brightness = float(np.mean(gray)) / 255.0
-        contrast = float(np.std(gray)) / 128.0
+        raw_brightness = float(np.mean(gray)) / 255.0
+        raw_contrast = float(np.std(gray)) / 128.0
         blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
         # Fog/haze: low contrast + high, uniform brightness + weak dark channel.
         dark_channel = self._dark_channel(frame) if frame.ndim == 3 else float(np.min(gray)) / 255.0
-        fog_score = float(np.clip((1.0 - contrast) * 0.6 + dark_channel * 0.4, 0.0, 1.0))
+        raw_fog = float(np.clip((1.0 - raw_contrast) * 0.6 + dark_channel * 0.4, 0.0, 1.0))
 
         # Low light: darkness weighted by low contrast.
-        lowlight_score = float(np.clip((1.0 - brightness) * 0.7 + (0.3 if contrast < 0.15 else 0.0), 0.0, 1.0))
+        raw_lowlight = float(np.clip((1.0 - raw_brightness) * 0.7 + (0.3 if raw_contrast < 0.15 else 0.0), 0.0, 1.0))
 
-        env = self._label(brightness, contrast, blur_score, fog_score, lowlight_score)
+        # Temporal EMA smoothing (35% new measurement, 65% history) for stable visuals
+        if self._smooth_brightness is None:
+            self._smooth_brightness = raw_brightness
+            self._smooth_contrast = raw_contrast
+            self._smooth_fog = raw_fog
+            self._smooth_lowlight = raw_lowlight
+            cand_label = self._label(self._smooth_brightness, self._smooth_contrast, blur_score,
+                                      self._smooth_fog, self._smooth_lowlight)
+            self._current_label = cand_label
+            self._label_counts[cand_label] = 1
+        else:
+            alpha = 0.35
+            self._smooth_brightness = alpha * raw_brightness + (1 - alpha) * self._smooth_brightness
+            self._smooth_contrast = alpha * raw_contrast + (1 - alpha) * self._smooth_contrast
+            self._smooth_fog = alpha * raw_fog + (1 - alpha) * self._smooth_fog
+            self._smooth_lowlight = alpha * raw_lowlight + (1 - alpha) * self._smooth_lowlight
+            cand_label = self._label(self._smooth_brightness, self._smooth_contrast, blur_score,
+                                      self._smooth_fog, self._smooth_lowlight)
+            # Hysteresis confirmation: require sustained detection before flipping environment state
+            self._label_counts[cand_label] = self._label_counts.get(cand_label, 0) + 1
+            for k in list(self._label_counts.keys()):
+                if k != cand_label:
+                    self._label_counts[k] = max(0, self._label_counts[k] - 1)
+            if self._label_counts[cand_label] >= 2:
+                self._current_label = cand_label
+
         return QualityReport(
-            environment=env, brightness=brightness, contrast=contrast, blur_score=blur_score,
-            fog_score=fog_score, lowlight_score=lowlight_score,
+            environment=self._current_label,
+            brightness=self._smooth_brightness,
+            contrast=self._smooth_contrast,
+            blur_score=blur_score,
+            fog_score=self._smooth_fog,
+            lowlight_score=self._smooth_lowlight,
             scores={
-                "day": 1.0 - lowlight_score,
-                "fog": fog_score,
-                "lowlight": lowlight_score,
+                "day": 1.0 - self._smooth_lowlight,
+                "fog": self._smooth_fog,
+                "lowlight": self._smooth_lowlight,
                 "blur": 1.0 if blur_score < self.blur_thr else 0.0,
             },
         )

@@ -26,7 +26,7 @@ class PlateDetector:
         self.min_aspect = min_aspect
         self.max_aspect = max_aspect
 
-    def detect(self, image: np.ndarray, max_candidates: int = 4) -> list[PlateCandidate]:
+    def detect(self, image: np.ndarray, max_candidates: int = 2) -> list[PlateCandidate]:
         if image is None or image.size == 0:
             return []
         h, w = image.shape[:2]

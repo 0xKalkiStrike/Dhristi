@@ -2,7 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
+
+os.environ.setdefault("OPENCV_FFMPEG_THREAD_COUNT", "1")
+try:
+    import cv2
+    cv2.setNumThreads(1)
+except Exception:
+    pass
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,11 +38,10 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     init_db()
     manager.set_loop(asyncio.get_running_loop())
-    await mongo.connect()  # optional live-event store; degrades gracefully if down
+    asyncio.create_task(mongo.connect())  # non-blocking background connection
     logger.info("DRISHTI-V ready", extra={"extra_fields": {
         "detector": settings.detector_backend, "ocr": settings.ocr_engine,
-        "db": "sqlite" if settings.database_url.startswith("sqlite") else "postgres",
-        "mongo": mongo.connected}})
+        "db": "sqlite" if settings.database_url.startswith("sqlite") else "postgres"}})
     yield
     logger.info("shutting down; stopping pipelines")
     pipeline_manager.stop_all()
@@ -48,10 +55,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow configured origins, plus any private-LAN origin when enabled so other
-# devices on the same network can use the app.
+# Allow configured origins, plus any private-LAN or tunnel origin
 _lan_regex = (
-    r"^http://(localhost|127\.0\.0\.1|(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.[0-9.]+)(:\d+)?$"
+    r"^https?://(localhost|127\.0\.0\.1|(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.[0-9.]+|.*\.loca\.lt|.*\.pinggy\.link)(:\d+)?$"
     if settings.cors_allow_lan else None
 )
 app.add_middleware(

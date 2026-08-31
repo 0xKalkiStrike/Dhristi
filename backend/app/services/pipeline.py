@@ -129,7 +129,6 @@ class CameraPipeline:
                                   settings.track_max_age, settings.track_min_hits, settings.track_iou_match)
             quality = ImageQualityService()
             enhancer = build_enhancer()
-            anpr = get_shared_anpr()
 
             camera = db.get(Camera, self.camera_pk)
             cal_orm = camera.calibration if camera else None
@@ -163,9 +162,12 @@ class CameraPipeline:
                 if not fd.ok:
                     if self.loop and source.frame_count > 0:
                         source.seek(0)
+                        tracker.reset()
+                        estimator = SpeedEstimator(calibration, settings.speed_min_confidence)
+                        self._track_obs_speed.clear()
                         continue
                     if getattr(source, "is_live", False):
-                        time.sleep(0.02)  # live source idle — wait briefly
+                        time.sleep(0.01)  # live source idle — wait briefly
                         continue
                     break
                 raw_index += 1
@@ -182,7 +184,7 @@ class CameraPipeline:
                 proc_frame = frame
                 enh = enhancer.enhance(frame, env_report)
                 used_backend_note = ""
-                detections: list[Detection] = []
+                detections: list[Detection] | None = None
 
                 # Cheap classical detector runs every frame for smooth tracking;
                 # expensive deep models run on the sampled interval.
@@ -195,9 +197,9 @@ class CameraPipeline:
                 self.stats["inference_ms"] = round((time.time() - t0) * 1000, 1)
 
                 # tracking (time_s = source-relative time for accurate speed timing)
-                tracks = tracker.update(detections, fd.frame_id, time_s=_epoch(fd.timestamp))
+                tracks = tracker.update(detections, fd.frame_id, time_s=_epoch(fd.timestamp), is_detect_frame=run_detect)
                 self.stats["tracks"] = len(tracks)
-                if run_detect:
+                if run_detect and detections is not None:
                     self.stats["detections"] += len(detections)
 
                 # persist detections (sampled) + track points
@@ -227,7 +229,7 @@ class CameraPipeline:
 
                     # ANPR gating (only on actively detected frames)
                     if t.confirmed and t.age == 0 and t.track_id not in self._plate_done:
-                        self._maybe_anpr(db, anpr, identity, t, frame, fd)
+                        self._maybe_anpr(db, identity, t, frame, fd)
 
                     # events
                     for evt in filter(None, [events.check_wrong_way(t), events.check_stopped(t),
@@ -375,10 +377,11 @@ class CameraPipeline:
                                       "color": color, "tracking_id": t.track_id,
                                       "association_confidence": assoc})
 
-    def _run_anpr_bg(self, anpr, identity, camera_id, track_id, uid, crop) -> None:
+    def _run_anpr_bg(self, identity, camera_id, track_id, uid, crop) -> None:
         from app.database.session import SessionLocal
         from app.models import PlateRead, Vehicle, VehicleObservation
         
+        anpr = get_shared_anpr()
         result = anpr.read_plate(crop, save=True, camera_id=camera_id, tracking_id=track_id)
         if result is None or not result.normalized_text:
             return
@@ -413,9 +416,9 @@ class CameraPipeline:
         except Exception as exc:
             logger.error("anpr bg thread error: %s", exc)
 
-    def _maybe_anpr(self, db, anpr, identity, t, frame, fd) -> None:
+    def _maybe_anpr(self, db, identity, t, frame, fd) -> None:
         attempts = self._plate_attempts.get(t.track_id, 0)
-        if attempts >= 10 or not anpr.ocr_available:
+        if attempts >= 10:
             return
         # gate: require a reasonably sized vehicle box
         if t.height < 40 or t.width < 40:
@@ -428,7 +431,7 @@ class CameraPipeline:
         uid = self._track_vehicle.get(t.track_id)
         threading.Thread(
             target=self._run_anpr_bg,
-            args=(anpr, identity, self.camera_id, t.track_id, uid, crop.copy()),
+            args=(identity, self.camera_id, t.track_id, uid, crop.copy()),
             daemon=True
         ).start()
 

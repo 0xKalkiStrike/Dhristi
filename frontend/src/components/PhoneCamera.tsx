@@ -49,23 +49,64 @@ export function PhoneCamera({ onConnected }: { onConnected: () => void }) {
       onConnected();
 
       let inFlight = false;
-      timerRef.current = setInterval(async () => {
-        const v = videoRef.current, c = canvasRef.current;
-        if (!v || !c || v.videoWidth === 0 || inFlight) return;
-        const scale = Math.min(1, MAX_W / v.videoWidth);
-        c.width = Math.round(v.videoWidth * scale);
-        c.height = Math.round(v.videoHeight * scale);
-        c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height);
-        const blob: Blob | null = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.6));
-        if (!blob) return;
-        inFlight = true;
-        try {
-          await fetch(`${BASE}/api/devices/ingest/${cam.camera_id}`, {
-            method: "POST", headers: { "Content-Type": "image/jpeg" }, body: blob,
-          });
-          setSent((n) => n + 1);
-        } catch { /* transient */ } finally { inFlight = false; }
-      }, SEND_MS);
+      let active = true;
+
+      const processFrame = () => {
+        if (!active) return;
+        const v = videoRef.current;
+        const c = canvasRef.current;
+        if (v && c && v.videoWidth > 0 && !inFlight) {
+          const maxDim = 640;
+          const scale = Math.min(1, maxDim / Math.max(v.videoWidth, v.videoHeight));
+          const w = Math.round(v.videoWidth * scale);
+          const h = Math.round(v.videoHeight * scale);
+          if (c.width !== w || c.height !== h) {
+            c.width = w;
+            c.height = h;
+          }
+          const ctx = c.getContext("2d", { willReadFrequently: true });
+          if (ctx) {
+            ctx.drawImage(v, 0, 0, w, h);
+            inFlight = true;
+            c.toBlob(
+              async (blob) => {
+                if (blob && active) {
+                  try {
+                    await fetch(`${BASE}/api/devices/ingest/${cam.camera_id}`, {
+                      method: "POST",
+                      headers: { "Content-Type": "image/jpeg" },
+                      body: blob,
+                    });
+                    setSent((n) => n + 1);
+                  } catch {
+                    /* transient */
+                  }
+                }
+                inFlight = false;
+              },
+              "image/jpeg",
+              0.65
+            );
+          }
+        }
+
+        // Hardware V-Sync locked next frame callback
+        if (active && videoRef.current) {
+          if ("requestVideoFrameCallback" in videoRef.current) {
+            (videoRef.current as any).requestVideoFrameCallback(processFrame);
+          } else {
+            requestAnimationFrame(processFrame);
+          }
+        }
+      };
+
+      if (videoRef.current) {
+        if ("requestVideoFrameCallback" in videoRef.current) {
+          (videoRef.current as any).requestVideoFrameCallback(processFrame);
+        } else {
+          requestAnimationFrame(processFrame);
+        }
+      }
     } catch (e: any) {
       setMsg(`Camera error: ${e?.message || e}. Grant camera permission and use HTTPS.`);
     }

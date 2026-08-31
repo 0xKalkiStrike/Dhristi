@@ -98,8 +98,16 @@ def _apply_environment(frame: np.ndarray, env: str) -> np.ndarray:
 
 
 def generate_scene(path: Path, vehicles: list[DemoVehicle], frames: int = 200,
-                   environment: str = "day") -> dict:
+                   environment: str = "day", force: bool = False) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not force and path.exists() and path.stat().st_size > 10000:
+        return {
+            "path": str(path),
+            "environment": environment,
+            "frames": frames,
+            "vehicles": [{"plate": v.plate, "class": v.vclass, "target_speed_kmh": v.target_speed_kmh()}
+                         for v in vehicles],
+        }
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(path), fourcc, FPS, (FRAME_W, FRAME_H))
     bg = _road_background()
@@ -108,7 +116,7 @@ def generate_scene(path: Path, vehicles: list[DemoVehicle], frames: int = 200,
         for v in vehicles:
             if f < v.start_frame:
                 continue
-            x = int(v.start_x + (f - v.start_frame) * v.vx)
+            x = int(round(v.start_x + (f - v.start_frame) * v.vx))
             if x > FRAME_W:
                 continue
             _draw_vehicle(frame, v, x)

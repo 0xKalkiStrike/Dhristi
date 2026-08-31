@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveEvent } from "../types";
 
-const WS_BASE =
-  import.meta.env.VITE_WS_BASE ||
-  `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+function getWsUrl(): string {
+  if (import.meta.env.VITE_WS_BASE) {
+    return `${import.meta.env.VITE_WS_BASE}/ws/events`;
+  }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  // Always connect directly to FastAPI backend on port 8000
+  const host = location.port === "5173" ? `${location.hostname}:8000` : location.host;
+  return `${proto}://${host}/ws/events`;
+}
 
 export function useLiveEvents(max = 60) {
   const [events, setEvents] = useState<LiveEvent[]>([]);
@@ -12,48 +18,87 @@ export function useLiveEvents(max = 60) {
 
   useEffect(() => {
     let closed = false;
-    let retry: ReturnType<typeof setTimeout>;
+    let retryTimer: ReturnType<typeof setTimeout>;
+    let fallbackPollTimer: ReturnType<typeof setInterval>;
+    let attempts = 0;
+
+    const pushEvents = (newEvents: LiveEvent[]) => {
+      setEvents((prev) => {
+        const seen = new Set(prev.map((e: any) => e.tracking_id || e._id));
+        const filtered = newEvents.filter((e: any) => !seen.has(e.tracking_id || e._id));
+        return [...filtered, ...prev].slice(0, max);
+      });
+    };
 
     const connect = () => {
+      if (closed) return;
+      const url = getWsUrl();
       try {
-        const ws = new WebSocket(`${WS_BASE}/ws/events`);
+        const ws = new WebSocket(url);
         wsRef.current = ws;
-        ws.onopen = () => setConnected(true);
+
+        ws.onopen = () => {
+          setConnected(true);
+        };
+
         ws.onclose = () => {
           setConnected(false);
-          if (!closed) retry = setTimeout(connect, 2000);
+          if (!closed) {
+            retryTimer = setTimeout(connect, 3000);
+          }
         };
+
         ws.onerror = () => {
-          // let onclose handle reconnection without aborting connection abruptly
+          // Handled via onclose
         };
+
         ws.onmessage = (msg) => {
           try {
             const data = JSON.parse(msg.data) as LiveEvent;
             if (data.type === "connected") return;
             setEvents((prev) => [{ ...data, _id: Date.now() + Math.random() }, ...prev].slice(0, max));
-          } catch {
-            /* ignore malformed */
-          }
+          } catch {}
         };
       } catch {
-        if (!closed) retry = setTimeout(connect, 2500);
-      }
-    };
-    connect();
-    return () => {
-      closed = true;
-      clearTimeout(retry);
-      const ws = wsRef.current;
-      if (ws) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close();
-        } else if (ws.readyState === WebSocket.CONNECTING) {
-          ws.onopen = () => ws.close();
+        if (!closed) {
+          retryTimer = setTimeout(connect, 3000);
         }
       }
     };
-  }, [max]);
 
+    connect();
+
+    // High-frequency telemetry polling fallback (active when WS is disconnected)
+    fallbackPollTimer = setInterval(async () => {
+      if (!connected && !closed) {
+        try {
+          const res = await fetch("/api/system/events/recent?limit=15");
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data) && data.length > 0) {
+              pushEvents(data.map((d) => ({ ...d, _id: d.id || Date.now() + Math.random() })));
+            }
+          }
+        } catch {}
+      }
+    }, 2000);
+
+    return () => {
+      closed = true;
+      clearTimeout(retryTimer);
+      clearInterval(fallbackPollTimer);
+      const ws = wsRef.current;
+      if (ws) {
+        try {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close();
+          } else if (ws.readyState === WebSocket.CONNECTING) {
+            ws.onopen = () => ws.close();
+          }
+        } catch {}
+      }
+    };
+  }, [max, connected]);
 
   return { events, connected };
 }

@@ -69,9 +69,20 @@ export function Dashboard() {
         {cameras === null ? (
           <Spinner label="Loading cameras…" />
         ) : cameras.length === 0 ? (
-          <div className="panel p-6">
-            <EmptyState title="No cameras configured"
-              hint="Click ▶ START DEMO in the top bar to load bundled multi-camera scenes." />
+          <div className="panel p-8 text-center space-y-4">
+            <div className="text-3xl opacity-40">🎥</div>
+            <div className="text-base font-semibold text-white">No Live Cameras Connected</div>
+            <p className="text-xs text-cmd-muted max-w-md mx-auto">
+              To view real AI detections, connect your laptop/phone camera or upload a video clip.
+            </p>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                className="btn btn-primary text-xs font-semibold px-4 py-2"
+                onClick={() => navigate("/cameras")}
+              >
+                ▶ Connect Live Camera (Real Data)
+              </button>
+            </div>
           </div>
         ) : (
           <div className={`grid ${GRID[grid]} gap-3`}>

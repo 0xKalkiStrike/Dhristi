@@ -65,15 +65,21 @@ class SpeedEstimator:
         return None
 
     def _update_dual_line(self, track_id, center, t_epoch) -> Optional[SpeedMeasurement]:
-        st = self._cross.setdefault(track_id, {"prev_a": None, "prev_b": None, "t_a": None, "t_b": None})
+        st = self._cross.setdefault(track_id, {"prev_a": None, "prev_b": None, "prev_t": None, "t_a": None, "t_b": None})
         sa = self.cal.side_a(center)
         sb = self.cal.side_b(center)
-        # detect zero-crossing of the signed side => line crossed
+        # detect zero-crossing of the signed side with sub-frame temporal interpolation (critical for 100+ km/h vehicles)
         if st["prev_a"] is not None and st["t_a"] is None and _sign_changed(st["prev_a"], sa):
-            st["t_a"] = t_epoch
+            prev_t = st["prev_t"] if st["prev_t"] is not None else t_epoch
+            denom = abs(st["prev_a"]) + abs(sa)
+            frac = abs(st["prev_a"]) / (denom + 1e-7) if denom > 0 else 0.5
+            st["t_a"] = prev_t + frac * (t_epoch - prev_t)
         if st["prev_b"] is not None and st["t_b"] is None and _sign_changed(st["prev_b"], sb):
-            st["t_b"] = t_epoch
-        st["prev_a"], st["prev_b"] = sa, sb
+            prev_t = st["prev_t"] if st["prev_t"] is not None else t_epoch
+            denom = abs(st["prev_b"]) + abs(sb)
+            frac = abs(st["prev_b"]) / (denom + 1e-7) if denom > 0 else 0.5
+            st["t_b"] = prev_t + frac * (t_epoch - prev_t)
+        st["prev_a"], st["prev_b"], st["prev_t"] = sa, sb, t_epoch
 
         if st["t_a"] is not None and st["t_b"] is not None:
             elapsed = abs(st["t_b"] - st["t_a"])
@@ -119,15 +125,23 @@ class SpeedEstimator:
 
     def _batch_dual_line(self, trajectory) -> Optional[SpeedMeasurement]:
         t_a = t_b = None
-        prev = None
+        prev_c = None
+        prev_t = None
         for _, t, cx, cy in trajectory:
             c = (cx, cy)
-            if prev is not None:
-                if t_a is None and _sign_changed(self.cal.side_a(prev), self.cal.side_a(c)):
-                    t_a = t
-                if t_b is None and _sign_changed(self.cal.side_b(prev), self.cal.side_b(c)):
-                    t_b = t
-            prev = c
+            if prev_c is not None and prev_t is not None:
+                if t_a is None and _sign_changed(self.cal.side_a(prev_c), self.cal.side_a(c)):
+                    sa1, sa2 = self.cal.side_a(prev_c), self.cal.side_a(c)
+                    denom = abs(sa1) + abs(sa2)
+                    frac = abs(sa1) / (denom + 1e-7) if denom > 0 else 0.5
+                    t_a = prev_t + frac * (t - prev_t)
+                if t_b is None and _sign_changed(self.cal.side_b(prev_c), self.cal.side_b(c)):
+                    sb1, sb2 = self.cal.side_b(prev_c), self.cal.side_b(c)
+                    denom = abs(sb1) + abs(sb2)
+                    frac = abs(sb1) / (denom + 1e-7) if denom > 0 else 0.5
+                    t_b = prev_t + frac * (t - prev_t)
+            prev_c = c
+            prev_t = t
         if t_a is None or t_b is None:
             return None
         elapsed = abs(t_b - t_a)

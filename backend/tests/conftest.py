@@ -5,8 +5,8 @@ from pathlib import Path
 # Must be set BEFORE app modules import settings.
 _TEST_DB = Path(__file__).resolve().parents[1] / "data" / "test_drishti.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB.as_posix()}"
-os.environ.setdefault("DETECTOR_BACKEND", "motion")   # tests avoid heavy models
-os.environ.setdefault("MONGODB_ENABLED", "false")     # tests don't require a live MongoDB
+os.environ["DETECTOR_BACKEND"] = "motion"   # tests avoid heavy models
+os.environ["MONGODB_ENABLED"] = "false"     # tests don't require a live MongoDB
 
 import pytest  # noqa: E402
 

@@ -10,6 +10,11 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(line_buffering=True, encoding="utf-8")
+except Exception:
+    pass
+
 BACKEND = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BACKEND))
 os.environ["DATABASE_URL"] = f"sqlite:///{(BACKEND / 'data' / 'verify_drishti.db').as_posix()}"
@@ -35,12 +40,13 @@ def main() -> int:
     init_db()
     db = SessionLocal()
     dataset = setup_demo(db)
-    print(f"[setup] {len(dataset)} demo cameras + calibrations ready")
+    db.commit()
+    print(f"[setup] {len(dataset)} demo cameras + calibrations ready", flush=True)
     expected = {v["plate"]: v["target_speed_kmh"] for c in dataset for v in c["expected"]}
 
     from app.models import Camera
     cam = db.scalar(select(Camera).where(Camera.camera_id == "CAM-001"))
-    print(f"[start] running pipeline on {cam.camera_id} ({cam.name}) for {RUN_SECONDS}s ...")
+    print(f"[start] running pipeline on {cam.camera_id} ({cam.name}) for {RUN_SECONDS}s ...", flush=True)
     p = pipeline_manager.start(cam, loop=True, demo_detector="motion")
 
     t0 = time.time()
@@ -49,7 +55,7 @@ def main() -> int:
         print(f"  [stats] frames={p.stats['frames']} dets={p.stats['detections']} "
               f"tracks={p.stats['tracks']} plates={p.stats['plates']} "
               f"speed_events={p.stats['speed_events']} events={p.stats['traffic_events']} "
-              f"env={p.stats['environment']} fps={p.stats['fps']}")
+              f"env={p.stats['environment']} fps={p.stats['fps']}", flush=True)
     pipeline_manager.stop("CAM-001")
     time.sleep(2)
 
@@ -83,7 +89,7 @@ def main() -> int:
 
     print(f"\n[expected demo speeds] {expected}")
     ok = count(Detection) > 0 and count(Track) > 0 and count(SpeedEvent) > 0
-    print("\nRESULT:", "PASS ✅" if ok else "PARTIAL ⚠️")
+    print("\nRESULT:", "PASS [OK]" if ok else "PARTIAL [WARN]")
     db.close()
     return 0 if ok else 1
 

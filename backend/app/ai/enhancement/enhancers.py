@@ -20,7 +20,9 @@ def gamma_correct(frame: np.ndarray, gamma: float = 1.5) -> np.ndarray:
 
 
 def denoise(frame: np.ndarray, strength: int = 5) -> np.ndarray:
-    return cv2.fastNlMeansDenoisingColored(frame, None, strength, strength, 7, 21)
+    d = min(7, max(3, strength))
+    sigma = float(strength * 8)
+    return cv2.bilateralFilter(frame, d, sigma, sigma)
 
 
 def sharpen(frame: np.ndarray, amount: float = 1.0) -> np.ndarray:

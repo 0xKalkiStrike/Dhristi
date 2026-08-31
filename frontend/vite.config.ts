@@ -24,17 +24,6 @@ export default defineConfig({
           proxy.on("error", () => {});
         },
       },
-      "/ws": {
-        target: backend,
-        changeOrigin: true,
-        ws: true,
-        configure: (proxy) => {
-          proxy.on("error", () => {});
-          proxy.on("proxyReqWs", (_proxyReq, _req, socket) => {
-            socket.on("error", () => {});
-          });
-        },
-      },
     },
   },
   build: { outDir: "dist", sourcemap: false },

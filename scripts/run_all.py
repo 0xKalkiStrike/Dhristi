@@ -295,8 +295,11 @@ def main() -> None:
     print(f"{CYAN}[DRISHTI-V] Starting Backend API on port {args.backend_port}...{RESET}", flush=True)
     backend_env = os.environ.copy()
     backend_env["PYTHONPATH"] = str(BACKEND_DIR)
+    backend_env["OPENCV_FFMPEG_THREAD_COUNT"] = "1"
+    backend_env["PYTHONIOENCODING"] = "utf-8"
+    backend_env["PYTHONUNBUFFERED"] = "1"
     backend_proc = subprocess.Popen(
-        [python_exe, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(args.backend_port), "--reload"],
+        [python_exe, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(args.backend_port)],
         cwd=str(BACKEND_DIR),
         env=backend_env,
         stdout=subprocess.PIPE,

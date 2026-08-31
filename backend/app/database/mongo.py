@@ -73,6 +73,12 @@ class MongoManager:
         except Exception as exc:
             self._connected = False
             self._last_error = str(exc)
+            if self._client is not None:
+                try:
+                    self._client.close()
+                except Exception:
+                    pass
+                self._client = None
             logger.warning("MongoDB unavailable (continuing without it): %s", exc)
             return False
 

@@ -52,7 +52,8 @@ class EasyOCRProvider(OCRProvider):
         if image is None or not self._ensure():
             return OCRResult("", 0.0, self.name)
         try:
-            results = self._reader.readtext(image, allowlist=_ALLOWLIST, detail=1, paragraph=False)
+            with self._lock:
+                results = self._reader.readtext(image, allowlist=_ALLOWLIST, detail=1, paragraph=False)
         except Exception as exc:
             logger.warning("EasyOCR read failed: %s", exc)
             return OCRResult("", 0.0, self.name)

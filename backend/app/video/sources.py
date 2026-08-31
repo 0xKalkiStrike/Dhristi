@@ -91,8 +91,13 @@ class VideoSource(abc.ABC):
 
     def seek(self, frame_index: int) -> None:
         if self._cap is not None:
-            self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-            self._frame_id = frame_index
+            ok = self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            if ok:
+                self._frame_id = frame_index
+                return
+        self.release()
+        self.open()
+        self._frame_id = 0
 
     def grab_frame(self, frame_index: int = 0) -> Optional[np.ndarray]:
         """One-shot frame grab (used for calibration preview)."""
@@ -131,8 +136,10 @@ class RTSPVideoSource(VideoSource):
         self._thread: Optional[threading.Thread] = None
         self._latest_raw: Optional[np.ndarray] = None
         self._latest_ts: float = 0.0
+        self._raw_seq: int = 0
         self._running = False
         self._lock = threading.Lock()
+        self._new_frame_event = threading.Event()
 
     def _open_target(self):
         if not self.uri:
@@ -155,6 +162,7 @@ class RTSPVideoSource(VideoSource):
             except Exception:
                 pass
         self._running = True
+        self._new_frame_event.clear()
         self._thread = threading.Thread(target=self._reader_loop, daemon=True, name=f"rtsp-reader-{self.uri[:16]}")
         self._thread.start()
 
@@ -171,20 +179,26 @@ class RTSPVideoSource(VideoSource):
                 with self._lock:
                     self._latest_raw = frame
                     self._latest_ts = time.time()
+                    self._raw_seq += 1
+                self._new_frame_event.set()
             else:
-                time.sleep(0.02)
+                time.sleep(0.01)
 
     def read(self) -> FrameData:
+        self._new_frame_event.wait(timeout=0.04)
         with self._lock:
             frame = self._latest_raw
             ts = self._latest_ts
+            seq = self._raw_seq
+            self._new_frame_event.clear()
         if frame is None:
             return FrameData(False, None, self._frame_id, time.time())
-        self._frame_id += 1
-        return FrameData(True, frame.copy(), self._frame_id, ts or time.time())
+        self._frame_id = seq
+        return FrameData(True, frame, self._frame_id, ts or time.time())
 
     def release(self) -> None:
         self._running = False
+        self._new_frame_event.set()
         if self._thread is not None:
             self._thread.join(timeout=0.5)
             self._thread = None
@@ -192,25 +206,26 @@ class RTSPVideoSource(VideoSource):
 
 
 def _open_local_camera(index: int):
-    """Open a local OS video device, preferring the fastest working backend.
-
-    On Windows, MSMF opens reliably (DSHOW can stall), so we try MSMF first,
-    then DSHOW, then the platform default.
-    """
+    """Open a local OS video device, prioritizing DirectShow on Windows for instant initialization."""
     import sys
-    backends = []
-    if sys.platform.startswith("win"):
-        backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
-    else:
-        backends = [cv2.CAP_ANY]
-    last = None
+    backends = [cv2.CAP_DSHOW] if sys.platform.startswith("win") else [cv2.CAP_ANY]
     for be in backends:
-        cap = cv2.VideoCapture(index, be)
-        if cap.isOpened():
-            return cap
-        cap.release()
-        last = cap
-    return last if last is not None else cv2.VideoCapture(index)
+        try:
+            cap = cv2.VideoCapture(index, be)
+            if cap.isOpened():
+                try:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    cap.set(cv2.CAP_PROP_FPS, 30)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                return cap
+            cap.release()
+        except Exception:
+            pass
+    return cv2.VideoCapture(index)
 
 
 class LiveDeviceVideoSource(VideoSource):
@@ -222,8 +237,10 @@ class LiveDeviceVideoSource(VideoSource):
         self._thread: Optional[threading.Thread] = None
         self._latest_raw: Optional[np.ndarray] = None
         self._latest_ts: float = 0.0
+        self._raw_seq: int = 0
         self._running = False
         self._lock = threading.Lock()
+        self._new_frame_event = threading.Event()
 
     def open(self) -> None:
         super().open()
@@ -233,6 +250,7 @@ class LiveDeviceVideoSource(VideoSource):
             except Exception:
                 pass
         self._running = True
+        self._new_frame_event.clear()
         self._thread = threading.Thread(target=self._reader_loop, daemon=True, name=f"cam-reader-{self.uri}")
         self._thread.start()
 
@@ -248,20 +266,26 @@ class LiveDeviceVideoSource(VideoSource):
                 with self._lock:
                     self._latest_raw = frame
                     self._latest_ts = time.time()
+                    self._raw_seq += 1
+                self._new_frame_event.set()
             else:
-                time.sleep(0.01)
+                time.sleep(0.005)
 
     def read(self) -> FrameData:
+        self._new_frame_event.wait(timeout=0.04)
         with self._lock:
             frame = self._latest_raw
             ts = self._latest_ts
+            seq = self._raw_seq
+            self._new_frame_event.clear()
         if frame is None:
             return FrameData(False, None, self._frame_id, time.time())
-        self._frame_id += 1
-        return FrameData(True, frame.copy(), self._frame_id, ts or time.time())
+        self._frame_id = seq
+        return FrameData(True, frame, self._frame_id, ts or time.time())
 
     def release(self) -> None:
         self._running = False
+        self._new_frame_event.set()
         if self._thread is not None:
             self._thread.join(timeout=0.5)
             self._thread = None

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -143,7 +143,7 @@ def camera_frame(camera_id: str):
 
 
 @router.get("/{camera_id}/stream")
-async def camera_stream(camera_id: str, db: Session = Depends(get_db)):
+async def camera_stream(camera_id: str, request: Request, db: Session = Depends(get_db)):
     """High-performance multipart MJPEG stream for real-time, zero-lag browser playback."""
     cam = db.scalar(select(Camera).where(Camera.camera_id == camera_id))
     if not cam:
@@ -167,9 +167,11 @@ async def camera_stream(camera_id: str, db: Session = Depends(get_db)):
             + _STANDBY_JPEG + b"\r\n"
         )
         while True:
+            if await request.is_disconnected():
+                break
             p = pipeline_manager.get(camera_id)
             if p and p.is_alive():
-                seq, jpeg = await asyncio.to_thread(p.get_latest_frame, last_seq, 0.15)
+                seq, jpeg = await asyncio.to_thread(p.get_latest_frame, last_seq, 0.1)
                 if seq != last_seq and jpeg:
                     last_seq = seq
                     yield (
@@ -178,9 +180,11 @@ async def camera_stream(camera_id: str, db: Session = Depends(get_db)):
                         b"Content-Length: " + str(len(jpeg)).encode("ascii") + b"\r\n\r\n"
                         + jpeg + b"\r\n"
                     )
+                else:
+                    await asyncio.sleep(0.005)
             else:
                 # Camera standby/offline: yield frame occasionally to keep HTTP connection alive
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
                 curr_jpeg = p.latest_jpeg if p and p.latest_jpeg else _STANDBY_JPEG
                 yield (
                     b"--frame\r\n"

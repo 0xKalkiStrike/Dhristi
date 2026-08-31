@@ -22,12 +22,13 @@ logger = get_logger("drishti.devices")
 _IS_WIN = sys.platform.startswith("win")
 
 
-def _powershell(command: str, timeout: int = 15) -> str:
+def _powershell(command: str, timeout: int = 6) -> str:
     if not _IS_WIN:
         return ""
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=timeout,
         )
         return proc.stdout or ""
@@ -51,20 +52,25 @@ def _parse_json_list(raw: str) -> list[dict]:
 
 def list_video_devices() -> dict:
     """OS camera devices with suggested OpenCV indices (order = index)."""
-    raw = _powershell(
-        "Get-PnpDevice -Class Camera -Status OK | "
-        "Select-Object FriendlyName,Status | ConvertTo-Json -Compress"
-    )
-    rows = _parse_json_list(raw)
     devices = []
-    for i, r in enumerate(rows):
-        name = r.get("FriendlyName") or f"Camera {i}"
-        devices.append({"index": i, "name": name, "status": r.get("Status", "OK"),
-                        "is_bluetooth": "blue" in name.lower()})
-    if not devices and not _IS_WIN:
-        # non-Windows: suggest indices 0..2 to probe
-        devices = [{"index": i, "name": f"video{i}", "status": "unknown", "is_bluetooth": False}
-                   for i in range(3)]
+    if _IS_WIN:
+        raw = _powershell(
+            "Get-PnpDevice -Class Camera -Status OK | "
+            "Select-Object FriendlyName,Status | ConvertTo-Json -Compress",
+            timeout=5,
+        )
+        rows = _parse_json_list(raw)
+        for i, r in enumerate(rows):
+            name = r.get("FriendlyName") or f"Camera {i}"
+            devices.append({"index": i, "name": name, "status": r.get("Status", "OK"),
+                            "is_bluetooth": "blue" in name.lower()})
+
+    # Always ensure at least default indices 0 and 1 are available as options
+    if not devices:
+        devices = [
+            {"index": 0, "name": "Integrated / USB Webcam (Index 0)", "status": "OK", "is_bluetooth": False},
+            {"index": 1, "name": "Secondary Camera (Index 1)", "status": "OK", "is_bluetooth": False},
+        ]
     return {"count": len(devices), "devices": devices, "platform": sys.platform}
 
 
@@ -72,7 +78,8 @@ def list_bluetooth_devices() -> dict:
     """Paired/known Bluetooth devices. Cameras among these can be selected."""
     raw = _powershell(
         "Get-PnpDevice -Class Bluetooth -Status OK | "
-        "Select-Object FriendlyName,Status | ConvertTo-Json -Compress"
+        "Select-Object FriendlyName,Status | ConvertTo-Json -Compress",
+        timeout=5,
     )
     rows = _parse_json_list(raw)
     devices = []
@@ -94,33 +101,39 @@ def list_bluetooth_devices() -> dict:
     }
 
 
-def probe_video_index(index: int, timeout: float = 12.0) -> dict:
+def probe_video_index(index: int, timeout: float = 2.0) -> dict:
     """Try to open a local video device by index and grab one frame (bounded)."""
     result: dict = {"index": index, "ok": False, "error": None, "width": 0, "height": 0}
+    if index < 0 or index > 10:
+        result["error"] = f"device index {index} out of valid range (0-10)"
+        return result
 
     def _work():
+        cap = None
         try:
             from app.video.sources import _open_local_camera
             cap = _open_local_camera(index)
-            try:
-                if cap is None or not cap.isOpened():
-                    result["error"] = "device did not open"
-                    return
-                ok, frame = cap.read()
-                if ok and frame is not None:
-                    result["ok"] = True
-                    result["height"], result["width"] = frame.shape[:2]
-                else:
-                    result["error"] = "opened but no frame"
-            finally:
-                if cap is not None:
-                    cap.release()
+            if cap is None or not cap.isOpened():
+                result["error"] = "device did not open"
+                return
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                result["ok"] = True
+                result["height"], result["width"] = frame.shape[:2]
+            else:
+                result["error"] = "opened but no frame"
         except Exception as exc:  # pragma: no cover
             result["error"] = str(exc)
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
 
     t = threading.Thread(target=_work, daemon=True)
     t.start()
     t.join(timeout)
     if t.is_alive():
-        result["error"] = f"probe timed out after {timeout}s"
+        result["error"] = f"probe timed out ({timeout}s) - device in use or permission denied"
     return result

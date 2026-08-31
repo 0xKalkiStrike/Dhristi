@@ -21,7 +21,7 @@ engine = create_engine(
     settings.database_url,
     echo=False,
     future=True,
-    connect_args={"check_same_thread": False, "timeout": 30} if _is_sqlite else {},
+    connect_args={"check_same_thread": False, "timeout": 10} if _is_sqlite else {},
     pool_pre_ping=not _is_sqlite,
 )
 
@@ -31,7 +31,7 @@ if _is_sqlite:
         cur = dbapi_connection.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA synchronous=NORMAL")
-        cur.execute("PRAGMA busy_timeout=30000")
+        cur.execute("PRAGMA busy_timeout=5000")
         cur.execute("PRAGMA foreign_keys=ON")
         cur.close()
 

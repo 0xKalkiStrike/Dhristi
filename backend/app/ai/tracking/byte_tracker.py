@@ -65,8 +65,16 @@ class ByteTracker(VehicleTracker):
         cost = np.zeros((len(tracks), len(dets)), dtype=np.float32)
         for i, t in enumerate(tracks):
             pred = self._predict(t)
+            pred_cx = (pred[0] + pred[2]) / 2.0
+            pred_cy = (pred[1] + pred[3]) / 2.0
+            pred_diag = max(1.0, ((pred[2] - pred[0]) ** 2 + (pred[3] - pred[1]) ** 2) ** 0.5)
             for j, d in enumerate(dets):
-                cost[i, j] = 1.0 - iou(pred, d.bbox)
+                det_cx, det_cy = d.center
+                c_dist = ((pred_cx - det_cx) ** 2 + (pred_cy - det_cy) ** 2) ** 0.5
+                iou_val = iou(pred, d.bbox)
+                # Distance-IoU: overlap penalized by normalized centroid distance (vital for 100+ km/h tracking)
+                diou = iou_val - (c_dist / (2.5 * pred_diag))
+                cost[i, j] = 1.0 - max(0.0, diou)
         rows, cols = linear_sum_assignment(cost)
         matches, um_t, um_d = [], [], []
         matched_t, matched_d = set(), set()
@@ -81,19 +89,40 @@ class ByteTracker(VehicleTracker):
 
     def _update_track(self, track: TrackState, det: Detection, frame_id: int,
                       ts: dt.datetime, t_epoch: float) -> None:
+        det.tracking_id = track.track_id
         old_cx, old_cy = track.center
-        # Exponential Moving Average (EMA) smoothing for rock-solid, jitter-free bounding boxes
-        alpha = 0.75
+        
+        # Adaptive Exponential Moving Average: smooth out sensor jitter while tracking real motion
+        det_cx = (det.bbox[0] + det.bbox[2]) / 2.0
+        det_cy = (det.bbox[1] + det.bbox[3]) / 2.0
+        det_w = det.bbox[2] - det.bbox[0]
+        det_h = det.bbox[3] - det.bbox[1]
+        
+        trk_w = track.bbox[2] - track.bbox[0]
+        trk_h = track.bbox[3] - track.bbox[1]
+        
+        dist = ((det_cx - old_cx) ** 2 + (det_cy - old_cy) ** 2) ** 0.5
+        # High responsiveness on large/high-speed movement (100+ km/h), rock-solid stability on small fluctuations
+        pos_alpha = 0.85 if dist > 35.0 else (0.65 if dist > 15.0 else 0.45)
+        size_alpha = 0.35  # Keep box size steady and free from flickering
+        
+        smooth_cx = pos_alpha * det_cx + (1.0 - pos_alpha) * (old_cx + track.velocity[0])
+        smooth_cy = pos_alpha * det_cy + (1.0 - pos_alpha) * (old_cy + track.velocity[1])
+        smooth_w = size_alpha * det_w + (1.0 - size_alpha) * trk_w
+        smooth_h = size_alpha * det_h + (1.0 - size_alpha) * trk_h
+        
         track.bbox = (
-            alpha * det.bbox[0] + (1 - alpha) * track.bbox[0],
-            alpha * det.bbox[1] + (1 - alpha) * track.bbox[1],
-            alpha * det.bbox[2] + (1 - alpha) * track.bbox[2],
-            alpha * det.bbox[3] + (1 - alpha) * track.bbox[3],
+            smooth_cx - smooth_w / 2.0,
+            smooth_cy - smooth_h / 2.0,
+            smooth_cx + smooth_w / 2.0,
+            smooth_cy + smooth_h / 2.0,
         )
+        
         ncx, ncy = track.center
         # Smooth velocity estimation
-        vx = alpha * (ncx - old_cx) + (1 - alpha) * track.velocity[0]
-        vy = alpha * (ncy - old_cy) + (1 - alpha) * track.velocity[1]
+        vel_alpha = 0.4
+        vx = vel_alpha * (ncx - old_cx) + (1.0 - vel_alpha) * track.velocity[0]
+        vy = vel_alpha * (ncy - old_cy) + (1.0 - vel_alpha) * track.velocity[1]
         track.velocity = (vx, vy)
         track.last_frame = frame_id
         track.last_seen = ts
@@ -106,10 +135,23 @@ class ByteTracker(VehicleTracker):
         if track.hits >= self.min_hits:
             track.confirmed = True
 
-    def update(self, detections: list[Detection], frame_id: int,
-               timestamp: Optional[dt.datetime] = None, time_s: Optional[float] = None) -> list[TrackState]:
+    def update(self, detections: Optional[list[Detection]], frame_id: int,
+               timestamp: Optional[dt.datetime] = None, time_s: Optional[float] = None,
+               is_detect_frame: bool = True) -> list[TrackState]:
         ts = timestamp or dt.datetime.now(dt.timezone.utc)
         t_epoch = time_s if time_s is not None else ts.timestamp()
+
+        # If this is a tracking-only frame (detector was skipped for performance),
+        # smoothly coast all active tracks without penalizing their age or killing momentum.
+        if not is_detect_frame or detections is None:
+            for t in self._tracks:
+                if t.age <= self.max_age:
+                    t.bbox = self._predict(t)
+                    ncx, ncy = t.center
+                    t.trajectory.append((frame_id, t_epoch, ncx, ncy))
+                    t.last_frame = frame_id
+            return [t for t in self._tracks if t.age <= 5]
+
         high = [d for d in detections if d.confidence >= self.high_thresh]
         low = [d for d in detections if self.low_thresh <= d.confidence < self.high_thresh]
 
@@ -126,15 +168,14 @@ class ByteTracker(VehicleTracker):
         matched_remaining = {ti for ti, _ in matches2}
         still_unmatched = [remaining_tracks[i] for i in range(len(remaining_tracks)) if i not in matched_remaining]
 
-        # Age unmatched tracks and coast their predicted positions with velocity decay
+        # Age unmatched tracks and coast their predicted positions with gentle velocity decay
         for t in still_unmatched:
             t.age += 1
             if t.age <= self.max_age:
                 t.bbox = self._predict(t)
-                t.velocity = (t.velocity[0] * 0.92, t.velocity[1] * 0.92)  # gentle decay
+                t.velocity = (t.velocity[0] * 0.95, t.velocity[1] * 0.95)
                 ncx, ncy = t.center
                 t.trajectory.append((frame_id, t_epoch, ncx, ncy))
-
 
         # Create new tracks for unmatched high-confidence detections
         for di in um_d:
@@ -145,19 +186,12 @@ class ByteTracker(VehicleTracker):
                 bbox=d.bbox, first_frame=frame_id, last_frame=frame_id, first_seen=ts, last_seen=ts,
                 class_votes={d.vehicle_class: 1},
             )
+            d.tracking_id = t.track_id
             t.trajectory.append((frame_id, t_epoch, cx, cy))
             self._tracks.append(t)
 
         # Drop expired tracks
         self._tracks = [t for t in self._tracks if t.age <= self.max_age]
-
-        # Attach tracking ids to detections (for persistence)
-        for t in self._tracks:
-            if t.age == 0:
-                cx, cy = t.center
-                for d in detections:
-                    if d.tracking_id is None and abs(d.center[0] - cx) < 1e-3 and abs(d.center[1] - cy) < 1e-3:
-                        d.tracking_id = t.track_id
 
         # Return tracks that are actively observed or recently coasting (smooth visuals)
         max_visible_age = 5
