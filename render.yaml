@@ -4,12 +4,13 @@ services:
     name: drishti-backend
     env: python
     buildCommand: "pip install --upgrade pip && pip install -r backend/requirements.txt"
-    startCommand: "python scripts/setup/init_db.py && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    startCommand: "export PYTHONPATH=backend:YOLOv11-RGBT-master:$PYTHONPATH && python scripts/setup/init_db.py && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: PYTHONPATH
-        value: ./backend:./YOLOv11-RGBT-master
+        value: backend:YOLOv11-RGBT-master
+
 
   # ---- DRISHTI-V Frontend Web Dashboard ----
   - type: web
