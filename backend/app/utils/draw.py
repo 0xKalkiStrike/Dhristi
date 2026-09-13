@@ -53,10 +53,14 @@ def draw_overlays(frame: np.ndarray, tracks, calibration=None, environment: str 
         cv2.line(out, (x2, y2), (x2 - c_len, y2), (255, 255, 255), thickness, cv2.LINE_AA)
         cv2.line(out, (x2, y2), (x2, y2 - c_len), (255, 255, 255), thickness, cv2.LINE_AA)
 
-        label = f"{t.vehicle_class.upper()} {t.track_id.split('-')[-1]}"
+        label = f"{t.vehicle_class.upper()} #{t.track_id.split('-')[-1]}"
+        plate = getattr(t, "_plate_label", None) or getattr(t, "plate", None)
+        if plate:
+            label += f" [{plate}]"
         speed = getattr(t, "_speed_label", None)
         if speed:
             label += f" | {speed}"
+
         
         f_scale = max(0.32, min(0.5, 0.38 * scale_factor))
         badge_h = int(round(16 * scale_factor))

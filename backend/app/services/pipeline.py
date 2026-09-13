@@ -89,10 +89,12 @@ class CameraPipeline:
 
         # per-track bookkeeping
         self._track_vehicle: dict[str, str] = {}
+        self._track_plates: dict[str, str] = {}
         self._track_obs_speed: set[str] = set()
         self._plate_attempts: dict[str, int] = {}
         self._plate_done: set[str] = set()
         self._persisted_tracks: set[str] = set()
+
 
     # ---------- lifecycle ----------
     def start(self) -> None:
@@ -241,9 +243,13 @@ class CameraPipeline:
 
                 active_count = len(tracks)
                 for t in tracks:
+                    if t.track_id in self._track_plates:
+                        t._plate_label = self._track_plates[t.track_id]  # type: ignore[attr-defined]
+
                     if t.age == 0:
                         self._persist_track_point(db, t, fd.frame_id)
                         self._maybe_persist_track(db, t)
+
 
                     # speed (streaming)
                     if estimator.available:
@@ -419,6 +425,8 @@ class CameraPipeline:
         result = anpr.read_plate(crop, save=True, camera_id=camera_id, tracking_id=track_id)
         if result is None or not result.normalized_text:
             return
+        
+        self._track_plates[track_id] = result.normalized_text
             
         try:
             with SessionLocal() as db:
