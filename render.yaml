@@ -4,7 +4,8 @@ services:
     name: drishti-backend
     env: python
     buildCommand: "pip install --upgrade pip && pip install -r backend/requirements.txt"
-    startCommand: "export PYTHONPATH=backend:YOLOv11-RGBT-master:$PYTHONPATH && python scripts/setup/init_db.py && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    startCommand: "cd backend && python ../scripts/setup/init_db.py && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
