@@ -1,6 +1,16 @@
 """DRISHTI-V FastAPI application entrypoint."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure backend and YOLOv11 repos are in sys.path so 'app' imports work from any working directory
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+YOLO11_DIR = BACKEND_DIR.parent / "YOLOv11-RGBT-master"
+for _p in (BACKEND_DIR, YOLO11_DIR):
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
 import asyncio
 import os
 from contextlib import asynccontextmanager
@@ -11,6 +21,7 @@ try:
     cv2.setNumThreads(1)
 except Exception:
     pass
+
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
