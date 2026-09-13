@@ -47,7 +47,11 @@ if not exist "frontend\node_modules\" (
     cd /d "%~dp0"
 )
 
-:: 5. Launch Unified Runner (Backend + Frontend + Port Forwarder + Public Tunnel)
+:: 5. Clean up any orphan processes holding ports (8000, 5173, 5174, 9000)
+echo [SETUP] Checking and clearing active ports...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 8000,5173,5174,9000 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } catch {} }" >nul 2>nul
+
+:: 6. Launch Unified Runner (Backend + Frontend + Port Forwarder + Public Tunnel)
 echo [OK] Launching all services with live port forwarding...
 echo.
 set PYTHONUNBUFFERED=1

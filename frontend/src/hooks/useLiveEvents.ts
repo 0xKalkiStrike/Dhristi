@@ -1,31 +1,40 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveEvent } from "../types";
 
+let eventSeq = 0;
+function createEventId(prefix = "evt"): string {
+  eventSeq = (eventSeq + 1) % 1_000_000_000;
+  return `${prefix}-${Date.now()}-${eventSeq}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function getWsUrl(): string {
   if (import.meta.env.VITE_WS_BASE) {
     return `${import.meta.env.VITE_WS_BASE}/ws/events`;
   }
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  // Always connect directly to FastAPI backend on port 8000
-  const host = location.port === "5173" ? `${location.hostname}:8000` : location.host;
-  return `${proto}://${host}/ws/events`;
+  return `${proto}://${location.host}/ws/events`;
 }
 
 export function useLiveEvents(max = 60) {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const isConnectedRef = useRef(false);
 
   useEffect(() => {
     let closed = false;
     let retryTimer: ReturnType<typeof setTimeout>;
     let fallbackPollTimer: ReturnType<typeof setInterval>;
-    let attempts = 0;
 
     const pushEvents = (newEvents: LiveEvent[]) => {
       setEvents((prev) => {
-        const seen = new Set(prev.map((e: any) => e.tracking_id || e._id));
-        const filtered = newEvents.filter((e: any) => !seen.has(e.tracking_id || e._id));
+        const seen = new Set(
+          prev.map((e: any) => e._id || (e.tracking_id ? `${e.camera_id || ""}-${e.tracking_id}` : "")).filter(Boolean),
+        );
+        const filtered = newEvents.filter((e: any) => {
+          const key = e._id || (e.tracking_id ? `${e.camera_id || ""}-${e.tracking_id}` : "");
+          return !key || !seen.has(key);
+        });
         return [...filtered, ...prev].slice(0, max);
       });
     };
@@ -38,10 +47,12 @@ export function useLiveEvents(max = 60) {
         wsRef.current = ws;
 
         ws.onopen = () => {
+          isConnectedRef.current = true;
           setConnected(true);
         };
 
         ws.onclose = () => {
+          isConnectedRef.current = false;
           setConnected(false);
           if (!closed) {
             retryTimer = setTimeout(connect, 3000);
@@ -56,7 +67,8 @@ export function useLiveEvents(max = 60) {
           try {
             const data = JSON.parse(msg.data) as LiveEvent;
             if (data.type === "connected") return;
-            setEvents((prev) => [{ ...data, _id: Date.now() + Math.random() }, ...prev].slice(0, max));
+            const uniqueEvent = { ...data, _id: (data as any)._id || createEventId("ws") };
+            setEvents((prev) => [uniqueEvent, ...prev].slice(0, max));
           } catch {}
         };
       } catch {
@@ -70,18 +82,18 @@ export function useLiveEvents(max = 60) {
 
     // High-frequency telemetry polling fallback (active when WS is disconnected)
     fallbackPollTimer = setInterval(async () => {
-      if (!connected && !closed) {
+      if (!isConnectedRef.current && !closed) {
         try {
           const res = await fetch("/api/system/events/recent?limit=15");
           if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data) && data.length > 0) {
-              pushEvents(data.map((d) => ({ ...d, _id: d.id || Date.now() + Math.random() })));
+              pushEvents(data.map((d) => ({ ...d, _id: d.id ? `poll-${d.id}` : createEventId("poll") })));
             }
           }
         } catch {}
       }
-    }, 2000);
+    }, 2500);
 
     return () => {
       closed = true;
@@ -98,7 +110,7 @@ export function useLiveEvents(max = 60) {
         } catch {}
       }
     };
-  }, [max, connected]);
+  }, [max]);
 
   return { events, connected };
 }

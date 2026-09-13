@@ -12,6 +12,7 @@ import datetime as dt
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import cv2
@@ -122,6 +123,7 @@ class CameraPipeline:
         from app.video.sources import build_video_source
         db = SessionLocal()
         self.running = True
+        detect_executor: Optional[ThreadPoolExecutor] = None
         try:
             detector = (build_detector(self.demo_detector) if self.demo_detector else get_shared_detector())
             self.stats["backend"] = detector.name
@@ -157,6 +159,16 @@ class CameraPipeline:
             last_ping = time.time()
             t_fps = time.time()
 
+            # Deep-model inference runs on its own worker so a slow CNN call never
+            # stalls frame publishing — that stall (frames bursting after every
+            # blocked inference) is what reads as stutter/"glitchy" live video.
+            # Tracks coast on predicted motion between detections (see ByteTracker),
+            # so the publish loop stays smooth while detections arrive whenever ready.
+            detect_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"det-{self.camera_id}")
+            pending_future = None
+            pending_enhanced = False
+            last_submit_processed = -det_interval
+
             while not self._stop.is_set():
                 fd = source.read()
                 if not fd.ok:
@@ -185,15 +197,32 @@ class CameraPipeline:
                 enh = enhancer.enhance(frame, env_report)
                 used_backend_note = ""
                 detections: list[Detection] | None = None
+                run_detect: bool
 
-                # Cheap classical detector runs every frame for smooth tracking;
-                # expensive deep models run on the sampled interval.
-                run_detect = (not detector.is_deep_model) or (processed % det_interval == 1) or (processed == 1)
-                if run_detect:
-                    input_frame = enh.frame if (enh.changed and env_report and env_report.environment in ("fog", "low_light", "night")) else frame
-                    detections = detector.detect(input_frame, self.camera_id, fd.frame_id)
-                    if enh.changed:
-                        used_backend_note = "enhanced"
+                if not detector.is_deep_model:
+                    # Cheap classical detector: negligible cost, run inline every frame.
+                    detections = detector.detect(frame, self.camera_id, fd.frame_id)
+                    run_detect = True
+                else:
+                    # Expensive deep model: submit off-thread, never block the publish loop.
+                    # Collect a completed result if one is ready.
+                    if pending_future is not None and pending_future.done():
+                        try:
+                            detections = pending_future.result()
+                        except Exception as exc:
+                            logger.error("detector error on %s: %s", self.camera_id, exc)
+                            detections = []
+                        run_detect = True
+                        used_backend_note = "enhanced" if pending_enhanced else ""
+                        pending_future = None
+                    else:
+                        run_detect = False
+                    # Kick off the next inference once the previous one has landed.
+                    if pending_future is None and (processed - last_submit_processed) >= det_interval:
+                        input_frame = enh.frame if (enh.changed and env_report and env_report.environment in ("fog", "low_light", "night")) else frame
+                        pending_enhanced = enh.changed
+                        pending_future = detect_executor.submit(detector.detect, input_frame, self.camera_id, fd.frame_id)
+                        last_submit_processed = processed
                 self.stats["inference_ms"] = round((time.time() - t0) * 1000, 1)
 
                 # tracking (time_s = source-relative time for accurate speed timing)
@@ -301,6 +330,11 @@ class CameraPipeline:
             self.running = False
             with self._frame_cond:
                 self._frame_cond.notify_all()
+            if detect_executor is not None:
+                try:
+                    detect_executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
             try:
                 db.close()
             except Exception:

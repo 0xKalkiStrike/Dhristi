@@ -19,8 +19,9 @@ COCO_VEHICLE_CLASSES = {
     5: "bus",
     7: "truck",
 }
-# Objects we also surface but treat separately from "vehicles"
-RELEVANT_CLASSES = {**COCO_VEHICLE_CLASSES, 0: "person"}
+# Strictly enforce vehicle-only class target (car, motorcycle, bus, truck, bicycle)
+RELEVANT_CLASSES = COCO_VEHICLE_CLASSES.copy()
+
 
 VEHICLE_CLASS_NAMES = set(COCO_VEHICLE_CLASSES.values())
 

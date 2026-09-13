@@ -17,6 +17,14 @@ export default defineConfig({
           proxy.on("error", () => {});
         },
       },
+      "/ws": {
+        target: backend,
+        ws: true,
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on("error", () => {});
+        },
+      },
       "/data": {
         target: backend,
         changeOrigin: true,

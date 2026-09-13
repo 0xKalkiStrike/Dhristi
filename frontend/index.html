@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DRISHTI-V — Command Center</title>
     <meta name="description" content="Dynamic Road Intelligence & Surveillance Through Intelligent Vision" />
+    <script>
+      // Filter out noisy third-party browser extension / web-vitals errors
+      window.addEventListener('error', function (e) {
+        if (e && (e.message?.indexOf('startTime') !== -1 || (e.error && e.error.stack && e.error.stack.indexOf('reportAllChanges') !== -1))) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+          return true;
+        }
+      }, true);
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="alternate icon" href="/favicon.ico" />
   </head>

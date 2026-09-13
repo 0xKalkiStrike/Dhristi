@@ -105,7 +105,7 @@ export function EventFeed({ events, connected }: { events: LiveEvent[]; connecte
         {shown.length === 0 ? (
           <EmptyState title="Waiting for events" hint="Start the demo or a camera to see live AI activity" />
         ) : (
-          shown.map((e, i) => <EventRow key={(e as any)._id ?? i} e={e} />)
+          shown.map((e, i) => <EventRow key={(e as any)._id ? `${(e as any)._id}-${i}` : `evt-${i}`} e={e} />)
         )}
       </div>
     </div>

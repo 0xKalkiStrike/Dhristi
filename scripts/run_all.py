@@ -142,11 +142,79 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
-def wait_for_backend(port: int, timeout: float = 12.0) -> bool:
+def free_port(port: int) -> bool:
+    """Check if a port is in use and attempt to terminate the occupying process."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.3)
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return True  # Port is already free
+    except Exception:
+        return True
+
+    print(f"{YELLOW}[DRISHTI-V] Port {port} is in use. Releasing...{RESET}", flush=True)
+    if os.name == "nt":
+        # 1. PowerShell process terminator
+        try:
+            ps_cmd = f"$ErrorActionPreference='SilentlyContinue'; Get-NetTCPConnection -LocalPort {port} -State Listen | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force }}"
+            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+        except Exception:
+            pass
+
+        # 2. taskkill fallback
+        try:
+            out = subprocess.check_output(f"netstat -ano | findstr :{port}", shell=True, text=True)
+            for line in out.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and "LISTENING" in line.upper():
+                    pid = parts[-1]
+                    try:
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    else:
+        try:
+            subprocess.run(f"fuser -k {port}/tcp", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    time.sleep(0.6)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.3)
+            return s.connect_ex(("127.0.0.1", port)) != 0
+    except Exception:
+        return True
+
+
+def resolve_port(preferred_port: int, service_name: str) -> int:
+    """Ensure a port is free; if blocked and cannot be freed, auto-allocate next open port."""
+    if free_port(preferred_port):
+        return preferred_port
+
+    for candidate in range(preferred_port + 1, preferred_port + 25):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.2)
+                if s.connect_ex(("127.0.0.1", candidate)) != 0:
+                    print(f"{YELLOW}[DRISHTI-V] Note: Port {preferred_port} for {service_name} was occupied; switching to port {candidate}.{RESET}", flush=True)
+                    return candidate
+        except Exception:
+            return candidate
+    return preferred_port
+
+
+def wait_for_backend(proc: subprocess.Popen, port: int, timeout: float = 12.0) -> bool:
     """Wait until the backend API server is fully running and answering health checks."""
     start_time = time.time()
     url = f"http://127.0.0.1:{port}/api/system/health"
     while time.time() - start_time < timeout:
+        if proc.poll() is not None:
+            return False
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "DRISHTI-V-Runner/1.0"})
             with urllib.request.urlopen(req, timeout=1) as resp:
@@ -291,15 +359,20 @@ def main() -> None:
         except Exception:
             pass
 
+    # Resolve ports dynamically (frees them or picks next free port)
+    backend_port = resolve_port(args.backend_port, "Backend API")
+    frontend_port = resolve_port(args.frontend_port, "Frontend UI")
+    forwarder_port = resolve_port(args.forwarder_port, "Local Forwarder") if not args.no_forwarder else args.forwarder_port
+
     # Step 2: Start Backend API
-    print(f"{CYAN}[DRISHTI-V] Starting Backend API on port {args.backend_port}...{RESET}", flush=True)
+    print(f"{CYAN}[DRISHTI-V] Starting Backend API on port {backend_port}...{RESET}", flush=True)
     backend_env = os.environ.copy()
     backend_env["PYTHONPATH"] = str(BACKEND_DIR)
     backend_env["OPENCV_FFMPEG_THREAD_COUNT"] = "1"
     backend_env["PYTHONIOENCODING"] = "utf-8"
     backend_env["PYTHONUNBUFFERED"] = "1"
     backend_proc = subprocess.Popen(
-        [python_exe, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(args.backend_port)],
+        [python_exe, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(backend_port)],
         cwd=str(BACKEND_DIR),
         env=backend_env,
         stdout=subprocess.PIPE,
@@ -313,17 +386,25 @@ def main() -> None:
 
     # Step 3: Wait for Backend to be fully ready before launching proxy/frontend
     print(f"{DIM}[DRISHTI-V] Waiting for Backend API startup...{RESET}", flush=True)
-    if not wait_for_backend(args.backend_port, timeout=12.0):
-        print(f"{YELLOW}[DRISHTI-V] Warning: Backend took longer than expected to answer health check.{RESET}", flush=True)
+    if not wait_for_backend(backend_proc, backend_port, timeout=12.0):
+        if backend_proc.poll() is not None:
+            print(f"{RED}[DRISHTI-V] Error: Backend process failed to start (exit code {backend_proc.poll()}). Check if port {backend_port} is busy.{RESET}", flush=True)
+            cleanup()
+            sys.exit(1)
+        else:
+            print(f"{YELLOW}[DRISHTI-V] Warning: Backend took longer than expected to answer health check.{RESET}", flush=True)
     else:
         print(f"{GREEN}[DRISHTI-V] Backend API is online and responding.{RESET}", flush=True)
 
     # Step 4: Start Frontend UI
-    print(f"{GREEN}[DRISHTI-V] Starting Frontend UI on port {args.frontend_port}...{RESET}", flush=True)
-    npm_cmd = ["cmd.exe", "/c", "npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", str(args.frontend_port)] if os.name == "nt" else ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", str(args.frontend_port)]
+    print(f"{GREEN}[DRISHTI-V] Starting Frontend UI on port {frontend_port}...{RESET}", flush=True)
+    frontend_env = os.environ.copy()
+    frontend_env["VITE_BACKEND"] = f"http://127.0.0.1:{backend_port}"
+    npm_cmd = ["cmd.exe", "/c", "npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", str(frontend_port), "--strictPort"] if os.name == "nt" else ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", str(frontend_port), "--strictPort"]
     frontend_proc = subprocess.Popen(
         npm_cmd,
         cwd=str(FRONTEND_DIR),
+        env=frontend_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -338,9 +419,9 @@ def main() -> None:
         port_forward_script = ROOT_DIR / "scripts" / "port_forward.py"
         if port_forward_script.exists():
             has_forwarder = True
-            print(f"{MAGENTA}[DRISHTI-V] Starting Local Port Forwarder on port {args.forwarder_port}...{RESET}", flush=True)
+            print(f"{MAGENTA}[DRISHTI-V] Starting Local Port Forwarder on port {forwarder_port}...{RESET}", flush=True)
             forwarder_proc = subprocess.Popen(
-                [python_exe, str(port_forward_script), "--listen-host", "0.0.0.0", "--listen-port", str(args.forwarder_port), "--target", f"http://127.0.0.1:{args.backend_port}"],
+                [python_exe, str(port_forward_script), "--listen-host", "0.0.0.0", "--listen-port", str(forwarder_port), "--target", f"http://127.0.0.1:{backend_port}"],
                 cwd=str(ROOT_DIR),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -353,8 +434,8 @@ def main() -> None:
     # Step 6: Start Public Port Forwarding Tunnel
     tunnel_state = {"url": None, "type": None, "ready": False}
     if not args.no_tunnel:
-        print(f"{YELLOW}[DRISHTI-V] Establishing Public Port Forwarding Tunnel for port {args.frontend_port}...{RESET}", flush=True)
-        tunnel_thread = threading.Thread(target=start_tunnel_worker, args=(args.frontend_port, tunnel_state, public_ip), daemon=True)
+        print(f"{YELLOW}[DRISHTI-V] Establishing Public Port Forwarding Tunnel for port {frontend_port}...{RESET}", flush=True)
+        tunnel_thread = threading.Thread(target=start_tunnel_worker, args=(frontend_port, tunnel_state, public_ip), daemon=True)
         tunnel_thread.start()
 
         # Wait up to 5 seconds for tunnel to resolve before initial banner
@@ -366,9 +447,9 @@ def main() -> None:
 
     # Print Clean Master Summary Banner with all URLs
     print_banner(
-        backend_port=args.backend_port,
-        frontend_port=args.frontend_port,
-        forwarder_port=args.forwarder_port,
+        backend_port=backend_port,
+        frontend_port=frontend_port,
+        forwarder_port=forwarder_port,
         lan_ip=lan_ip,
         public_ip=public_ip,
         tunnel_url=tunnel_state.get("url"),

@@ -95,6 +95,7 @@ def draw_overlays(frame: np.ndarray, tracks, calibration=None, environment: str 
     return out
 
 
-def encode_jpeg(frame: np.ndarray, quality: int = 75) -> bytes:
-    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+def encode_jpeg(frame: np.ndarray, quality: int = 72) -> bytes:
+    """Encode an OpenCV BGR frame to JPEG bytes with fast single-pass compression."""
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality, cv2.IMWRITE_JPEG_OPTIMIZE, 0])
     return buf.tobytes() if ok else b""

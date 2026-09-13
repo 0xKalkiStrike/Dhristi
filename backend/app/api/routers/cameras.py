@@ -200,7 +200,7 @@ async def camera_stream(camera_id: str, request: Request, db: Session = Depends(
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0",
-            "Connection": "close",
+            "X-Accel-Buffering": "no",
         },
     )
 

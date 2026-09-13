@@ -48,7 +48,9 @@ export function CameraTile({
             key={`${camera.camera_id}-${useFallback ? "fb" : "st"}-${retries}`}
             src={imgSrc}
             alt={camera.name}
-            className="w-full h-full object-cover transform-gpu will-change-transform"
+            loading="eager"
+            decoding="async"
+            className="w-full h-full object-cover transform-gpu will-change-transform translate-z-0"
             onError={handleError}
           />
         ) : (

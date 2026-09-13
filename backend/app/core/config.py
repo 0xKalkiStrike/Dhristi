@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # ---- AI runtime ----
     ai_device: str = "auto"            # auto|cpu|cuda
     detector_backend: str = "auto"     # auto|yolo|torchvision|motion|null
-    yolo_model: str = "yolov8n.pt"     # ultralytics weight name / path
+    yolo_model: str = "yolo11n.pt"     # ultralytics YOLOv11 weight name / path
     detection_confidence: float = 0.35
     detection_iou: float = 0.5
     # Frame sampling: run the expensive detector every N processed frames;
